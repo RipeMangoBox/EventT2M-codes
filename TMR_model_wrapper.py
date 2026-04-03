@@ -1,5 +1,7 @@
+import copy
 import os
 import sys
+import importlib
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -7,6 +9,16 @@ import torch
 from torch import Tensor
 from torch import nn as nn
 import numpy as np
+
+
+def extend_namespace_package(package_name: str, path: Path):
+    module = sys.modules.get(package_name)
+    if module is None or not hasattr(module, "__path__"):
+        return
+
+    path_str = str(path)
+    if path_str not in module.__path__:
+        module.__path__.append(path_str)
 
 @contextmanager
 def temporary_change_cwd(destination):
@@ -31,6 +43,10 @@ class TMR_Wrapper(nn.Module):
         if str(TMR_ROOT) not in sys.path:
             sys.path.insert(0, str(TMR_ROOT))
 
+        extend_namespace_package("src", TMR_ROOT / "src")
+        extend_namespace_package("src.data", TMR_ROOT / "src" / "data")
+        importlib.invalidate_caches()
+
         from third_packages.TMR.src.config import read_config
         from third_packages.TMR.src.data.collate import collate_x_dict
         from third_packages.TMR.src.data.text import TokenEmbeddings
@@ -38,8 +54,10 @@ class TMR_Wrapper(nn.Module):
         from third_packages.TMR.src.model.tmr import TMR
 
         self.collate_x_dict = collate_x_dict
+        self.model_dir = model_dir
+        self.base_cfg = read_config(str(model_dir))
 
-        cfg = read_config(str(model_dir))
+        cfg = copy.deepcopy(self.base_cfg)
 
         abs_model_dir = (PROJECT_ROOT / model_dir).resolve()
 
@@ -47,6 +65,11 @@ class TMR_Wrapper(nn.Module):
             cfg.run_dir = abs_model_dir.relative_to(TMR_ROOT.resolve())
         except ValueError:
             cfg.run_dir = abs_model_dir
+
+        cfg.data.text_to_token_emb.path = str((TMR_ROOT / cfg.data.text_to_token_emb.path).resolve())
+        if 'text_to_sent_emb' in cfg.data:
+            cfg.data.text_to_sent_emb.path = str((TMR_ROOT / cfg.data.text_to_sent_emb.path).resolve())
+        cfg.data.path = str((TMR_ROOT / cfg.data.path).resolve())
 
         with temporary_change_cwd(PROJECT_ROOT):
             cfg.data.text_to_token_emb['_target_'] = 'third_packages.TMR.src.data.text.TokenEmbeddings'

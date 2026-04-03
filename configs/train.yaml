@@ -4,6 +4,7 @@
 # order of defaults determines the order in which configs override each other
 
 project_name: event-t2m
+exp_name: ${oc.env:EVENTT2M_EXP_NAME,exp1}
 
 defaults:
   - data: hml3d_event_final
@@ -41,6 +42,10 @@ logger:
 
 # task name, determines output directory path
 task_name: "event"
+
+hydra:
+  run:
+    dir: ${paths.root_dir}/checkpoints/${exp_name}/${data.dataset_name}
 
 # tags to help you identify your experiments
 # you can overwrite this in experiment configs

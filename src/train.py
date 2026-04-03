@@ -1,4 +1,8 @@
+import os
 import os.path
+import re
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import hydra
@@ -34,11 +38,41 @@ from src.utils import (
     instantiate_callbacks,
     instantiate_loggers,
     log_hyperparameters,
+    normalize_trainer_devices,
     task_wrapper,
 )
 
 log = RankedLogger(__name__, rank_zero_only=True)
-    
+
+
+def resolve_exp_name(project_root: str, exp_name: str) -> str:
+    match = re.fullmatch(r"exp(\d+)", exp_name)
+    if not match:
+        return exp_name
+
+    checkpoints_root = os.path.join(project_root, "checkpoints")
+    os.makedirs(checkpoints_root, exist_ok=True)
+
+    requested_index = int(match.group(1))
+    existing_indices = []
+    for name in os.listdir(checkpoints_root):
+        existing_match = re.fullmatch(r"exp(\d+)", name)
+        if existing_match and os.path.isdir(os.path.join(checkpoints_root, name)):
+            existing_indices.append(int(existing_match.group(1)))
+
+    if requested_index not in existing_indices:
+        return exp_name
+
+    return f"exp{max(existing_indices, default=0) + 1}"
+
+
+def resolve_requested_exp_name(argv: List[str], default_exp_name: str = "exp1") -> str:
+    exp_name = os.environ.get("EVENTT2M_EXP_NAME", default_exp_name)
+    for arg in argv:
+        if arg.startswith("exp_name="):
+            exp_name = arg.split("=", 1)[1]
+    return exp_name
+
 
 @task_wrapper
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -117,6 +151,8 @@ def main(cfg: DictConfig) -> Optional[float]:
     :param cfg: DictConfig configuration composed by Hydra.
     :return: Optional[float] with optimized metric value.
     """
+    normalize_trainer_devices(cfg)
+
     # apply extra utilities
     # (e.g. ask for tags if none are provided in cfg, print cfg tree, etc.)
     extras(cfg)
@@ -134,4 +170,14 @@ def main(cfg: DictConfig) -> Optional[float]:
 
 
 if __name__ == "__main__":
+    project_root = str(Path(__file__).resolve().parents[1])
+    requested_exp_name = resolve_requested_exp_name(sys.argv[1:])
+    resolved_exp_name = resolve_exp_name(project_root, requested_exp_name)
+    os.environ["EVENTT2M_EXP_NAME"] = resolved_exp_name
+
+    if resolved_exp_name != requested_exp_name:
+        log.info(
+            f"Experiment directory '{requested_exp_name}' already exists. Using '{resolved_exp_name}' instead."
+        )
+
     main()

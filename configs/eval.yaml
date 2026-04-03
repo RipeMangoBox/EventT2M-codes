@@ -19,3 +19,6 @@ ckpt_path: ???
 
 # seed for random number generators in pytorch, numpy and python.random
 seed: null
+
+# if true, skip native diffusion evaluation and only export retrieval-style metrics
+retrieval_only: false

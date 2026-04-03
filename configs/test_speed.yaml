@@ -15,7 +15,7 @@ task_name: "test_speed"
 tags: ["dev"]
 
 # passing checkpoint path is necessary for evaluation
-ckpt_path: "checkpoints/hml3d.ckpt"
+ckpt_path: "checkpoints/pretrained/HumanML3D/hml3d.ckpt"
 
 # seed for random number generators in pytorch, numpy and python.random
 seed: null

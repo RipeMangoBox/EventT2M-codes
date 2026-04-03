@@ -12,6 +12,8 @@ sweep:
   dir: ${paths.log_dir}/${task_name}/multiruns/${now:%Y-%m-%d}_${now:%H-%M-%S}
   subdir: ${hydra.job.num}
 
+# training-specific output layout can override hydra.run.dir via config group
+
 
 job_logging:
   handlers:

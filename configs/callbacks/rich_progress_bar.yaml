@@ -1,4 +1,4 @@
-# https://lightning.ai/docs/pytorch/latest/api/lightning.pytorch.callbacks.RichProgressBar.html
+# Prefer tqdm here because RichProgressBar can crash in some Hydra/DDP terminal setups.
 
 rich_progress_bar:
-  _target_: lightning.pytorch.callbacks.RichProgressBar
+  _target_: lightning.pytorch.callbacks.TQDMProgressBar

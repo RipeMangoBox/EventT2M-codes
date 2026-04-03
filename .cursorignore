@@ -1,0 +1,15 @@
+# Add directories or file patterns to ignore during indexing (e.g. foo/ or *.csv)
+.npy
+.pt
+.pth
+.ckpt
+.ptl
+.pthl
+.ckptl
+.ptlm
+.pthlm
+.ckptlm
+.ptlm
+.zip
+
+third_packages/TMR/datasets

@@ -3,7 +3,11 @@ import torch as th
 import torch.nn as nn
 from typing import List, Dict
 
-import clip
+try:
+    import clip
+except ModuleNotFoundError:
+    clip = None
+
 from transformers import RobertaTokenizer, RobertaModel, logging
 logging.set_verbosity_error()
 

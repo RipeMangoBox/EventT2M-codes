@@ -1,10 +1,19 @@
+import re
 import warnings
 from importlib.util import find_spec
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 
 from src.utils import pylogger, rich_utils
+
+
+def _get_num_devices(devices: Any) -> Optional[int]:
+    if isinstance(devices, int):
+        return devices
+    if isinstance(devices, (list, tuple, ListConfig)):
+        return len(devices)
+    return None
 
 log = pylogger.RankedLogger(__name__, rank_zero_only=True)
 
@@ -38,6 +47,61 @@ def extras(cfg: DictConfig) -> None:
     if cfg.extras.get("print_config"):
         log.info("Printing config tree with Rich! <cfg.extras.print_config=True>")
         rich_utils.print_config_tree(cfg, resolve=True, save_to_file=True)
+
+
+def normalize_trainer_devices(cfg: DictConfig) -> None:
+    """Normalizes Hydra/CLI device overrides into Lightning-compatible values.
+
+    Common CLI inputs in this project include:
+    - `trainer.devices=0`   -> single GPU index 0
+    - `trainer.devices=0,1` -> multi-GPU indices [0, 1]
+    - `trainer.devices=[0]` -> already explicit
+
+    Lightning interprets bare integer `0` as "use zero devices", which is invalid for CUDA.
+    We rewrite index-like inputs into explicit GPU index lists.
+
+    Additionally, if the final configuration resolves to a single GPU, we disable DDP-specific
+    strategy settings to avoid unnecessary subprocess launch and terminal/progress-bar issues.
+    """
+    if not cfg.get("trainer") or "devices" not in cfg.trainer:
+        return
+
+    devices = cfg.trainer.devices
+    accelerator = cfg.trainer.get("accelerator")
+
+    if accelerator not in {"gpu", "cuda"}:
+        return
+
+    if isinstance(devices, int):
+        if devices == 0:
+            OmegaConf.update(cfg, "trainer.devices", [0], merge=False)
+    elif isinstance(devices, ListConfig):
+        OmegaConf.update(cfg, "trainer.devices", list(devices), merge=False)
+    elif isinstance(devices, str):
+        stripped = devices.strip()
+
+        if stripped == "0":
+            OmegaConf.update(cfg, "trainer.devices", [0], merge=False)
+        else:
+            bracket_match = re.fullmatch(r"\[(\d+(?:\s*,\s*\d+)*)\]", stripped)
+            if bracket_match:
+                parsed = [int(part.strip()) for part in bracket_match.group(1).split(",")]
+                OmegaConf.update(cfg, "trainer.devices", parsed, merge=False)
+            else:
+                csv_match = re.fullmatch(r"\d+(?:\s*,\s*\d+)+", stripped)
+                if csv_match:
+                    parsed = [int(part.strip()) for part in stripped.split(",")]
+                    OmegaConf.update(cfg, "trainer.devices", parsed, merge=False)
+
+    resolved_devices = cfg.trainer.devices
+    num_devices = _get_num_devices(resolved_devices)
+    if num_devices == 1:
+        with open_dict(cfg.trainer):
+            if "strategy" in cfg.trainer:
+                del cfg.trainer["strategy"]
+        if "sync_batchnorm" in cfg.trainer:
+            OmegaConf.update(cfg, "trainer.sync_batchnorm", False, merge=False)
+
 
 
 def task_wrapper(task_func: Callable) -> Callable:

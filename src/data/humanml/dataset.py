@@ -11,6 +11,7 @@ from torch.utils import data
 from .scripts.motion_process import process_file, recover_from_ric
 from .scripts.word_vectorizer import WordVectorizer
 
+
 class T2MDataset(data.Dataset):
     def __init__(
         self,
@@ -59,7 +60,9 @@ class T2MDataset(data.Dataset):
 
         # Randomly select a caption
         text_data = random.choice(text_list)
-        caption, tokens, decomposed = text_data["caption"], text_data["tokens"], text_data["decomposed"]
+        caption, tokens = text_data["caption"], text_data["tokens"]
+        assert "decomposed" in text_data, f"Missing `decomposed` field for caption: {caption}"
+        decomposed = text_data["decomposed"]
 
         # only used during val and test
         word_embeddings = np.array([0])

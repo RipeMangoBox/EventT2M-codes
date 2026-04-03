@@ -1,0 +1,9 @@
+defaults:
+  - defaults
+  - _self_
+
+base_folder: datasets/motions/pose_data
+output_folder: datasets/motions/guoh3dfeats
+video_folder: datasets/motions/guoh3dvideos
+
+force_redo: false # true to recompute the features

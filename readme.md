@@ -1,28 +1,8 @@
-<!-- # Event-T2M: Event-level Conditioning for Complex Text-to-Motion Synthesis -->
-
 # Event-T2M: Event-level Conditioning for Complex Text-to-Motion Synthesis (ICLR 2026)
 
 The official PyTorch implementation of the paper "Event-T2M: Event-level Conditioning for Complex Text-to-Motion Synthesis".
 
-<p align="center">
-  <a href='https://arxiv.org/pdf/2602.04292' target="_blank">
-  <img src='https://img.shields.io/badge/Arxiv-2602.04292-A42C25?style=flat&logo=arXiv&logoColor=A42C25'>
-  </a> 
-  <a href='https://openreview.net/pdf?id=mXPeXZ1KWT' target='_blank'>
-  <img src='https://img.shields.io/badge/Paper-PDF-yellow?style=flat&logo=arXiv&logoColor=yellow'>
-  </a> 
-  <a href='https://tjswodud.github.io/EventT2M/' target="_blank">
-  <img src='https://img.shields.io/badge/Project-Page-%23df5b46?style=flat&logo=Google%20chrome&logoColor=%23df5b46'></a> 
-  <!-- <a href='https://youtu.be/PcxUzZ1zg6o'>
-  <img src='https://img.shields.io/badge/YouTube-Video-EA3323?style=flat&logo=youtube&logoColor=EA3323'></a> -->
-  <a href="" target='_blank'>
-  <img src="https://visitor-badge.laobi.icu/badge?page_id=tjswodud.EventT2M-codes&left_color=gray&right_color=%2342b983">
-  </a> 
-</p>
-
 ## Setting an Environment
-
-<details>
 
 ### 1. Create Conda Environment
 
@@ -44,23 +24,22 @@ We conduct experiments on the HumanML3D and KIT-ML datasets. For both datasets, 
 
 ### 3. Prepare the HumanML3D-E Dataset
 
-You can download the completed HumanML3D-E dataset from [here](https://drive.google.com/file/d/18cCVmCo_xM1JIUgDOe_0oSrqophAyw0m/view?usp=sharing).
+You can download the completed HumanML3D-E dataset from [here](https://drive.google.com/drive/folders/19mPyYV8j1vnfJ6W9tZX9758JtDUQpYop?usp=sharing).
 
 If you want to prepare the dataset from scratch, follow the steps below:
 
-<details>
-
 Since an LLM (Gemini 2.5 flash) was used for HumanML3D-E data preprocessing, an API key is required.
 Please enter the issued API key on line 6 of `src/tools/data_decompose.py`.
+
 ```bash
 GOOGLE_API_KEY = "" # your api key here
 ```
 
 - For processing,
+
 ```bash
 python src/tools/data_decompose.py
 ```
-</details>
 
 ### 4. Preprocess the Datasets
 
@@ -78,8 +57,6 @@ This will add the following files to the directory:
 └── data_test.npy
 ```
 
-<details>
-
 Also, we have released test subsets based on the number of conditions for event-stratified evaluation.
 
 ```
@@ -89,9 +66,9 @@ Also, we have released test subsets based on the number of conditions for event-
 ├── data_test_condition3.npy
 └── data_test_condition4.npy
 ```
-</details>
 
 ### 5. Download Dependencies and Pre-trained Models
+
 Download and unzip dependencies from [here](https://onedrive.live.com/?id=76593CF7B7FC849C%21180700&resid=76593CF7B7FC849C%21180700&e=345HR5&migratedtospo=true&redeem=aHR0cHM6Ly8xZHJ2Lm1zL3UvcyFBcHlFX0xmM1BGbDJpNE5jRThtZ1ZVTjNvWDluVFE_ZT0zNDVIUjU&cid=76593cf7b7fc849c&v=validatepermission).
 
 Download and unzip pre-trained models from [here](https://drive.google.com/drive/folders/19mPyYV8j1vnfJ6W9tZX9758JtDUQpYop?usp=sharing).
@@ -99,49 +76,155 @@ Download and unzip pre-trained models from [here](https://drive.google.com/drive
 ```
 ./
 ├── checkpoints
-|   ├── hml3d.ckpt
-|   ├── kit.ckpt
+||   ├── hml3d.ckpt
+||   ├── kit.ckpt
 ├── deps
-|   ├── glove
-|   ├── t2m_guo
+||   ├── glove
+||   ├── t2m_guo
 └── ...
 ```
 
-</details>
-
 ## Training
 
-<details>
-
 - For HumanML3D
+
 ```bash
-python src/train.py trainer.devices=\"0,1\" logger=wandb data=hml3d_event_final \
-    data.batch_size=128 data.repeat_dataset=5 trainer.max_epochs=600 \
+python src/train.py trainer.devices="[0]" logger=wandb data=hml3d_event_final \
+    data.batch_size=512 data.repeat_dataset=5 trainer.max_epochs=600 \
     callbacks/model_checkpoint=t2m +model/lr_scheduler=cosine model.guidance_scale=4\
     model.noise_scheduler.prediction_type=sample trainer.precision=bf16-mixed
 ```
 
 - For KIT-ML
+
 ```bash
-python src/train.py trainer.devices=\"2,3\" logger=wandb data=kit_event_final \
-    data.batch_size=128 data.repeat_dataset=5 trainer.max_epochs=1000 \
+python src/train.py trainer.devices="[2,3]" logger=wandb data=kit_event_final \
+    data.batch_size=512 data.repeat_dataset=5 trainer.max_epochs=1000 \
     callbacks/model_checkpoint=t2m +model/lr_scheduler=cosine model.guidance_scale=4\
     model.noise_scheduler.prediction_type=sample trainer.precision=bf16-mixed
 ```
-</details>
 
 ## Evaluation
 
-<details>
+This workspace supports two evaluation modes through `src/eval.py` only. The helper shell wrapper has been removed on purpose, so please run evaluation directly with the commands below.
 
-Set `model.metrics.enable_mm_metric` to `True` to evaluate Multimodality. Setting `model.metrics.enable_mm_metric` to `False` an speed up the evaluation.
+### Mode 1: TMR-aligned retrieval only
+
+Use this mode when you only want fair retrieval comparison against TMR / MotionPatches. It skips EventT2M's native diffusion evaluation and exports only the TMR-aligned retrieval YAMLs.
+
+For HumanML3D:
 
 ```bash
-python src/eval.py trainer.devices=\"0,\" data=hml3d_event_final data.test_batch_size=128 \
-    model=event_final  \
-    model.guidance_scale=4 model.noise_scheduler.prediction_type=sample\
-    model.denoiser.stage_dim=\"256\*4\" \
-    ckpt_path=\"checkpoints/hml3d.ckpt\" model.metrics.enable_mm_metric=true
+python src/eval.py trainer.devices="[0]" data=hml3d_event_final data.test_batch_size=128 \
+    model=event_final \
+    model.guidance_scale=4 model.noise_scheduler.prediction_type=sample \
+    model.denoiser.stage_dim="256*4" \
+    ckpt_path="checkpoints/pretrained/HumanML3D/hml3d.ckpt" \
+    retrieval_only=true model.metrics.enable_mm_metric=false
 ```
 
-</details>
+For KIT-ML:
+
+```bash
+python src/eval.py trainer.devices="[0]" data=kit_event_final data.test_batch_size=128 \
+    model=event_final \
+    model.guidance_scale=4 model.noise_scheduler.prediction_type=sample \
+    model.denoiser.stage_dim="256*4" \
+    ckpt_path="checkpoints/pretrained/KIT-ML/kit.ckpt" \
+    retrieval_only=true model.metrics.enable_mm_metric=false
+```
+
+This mode writes the following TMR-aligned retrieval files into the checkpoint folder's `eval/` directory:
+
+- `normal.yaml`
+- `threshold_0.95.yaml`
+- `nsim.yaml`
+- `guo.yaml`
+
+No EventT2M native diffusion report is produced in this mode.
+
+### Mode 2: TMR-aligned retrieval + EventT2M native evaluation
+
+Use this mode when you want both:
+
+- the same TMR-aligned retrieval export used for cross-repository comparison; and
+- EventT2M's original native generation evaluation.
+
+For HumanML3D:
+
+```bash
+python src/eval.py trainer.devices="[0]" data=hml3d_event_final data.test_batch_size=128 \
+    model=event_final \
+    model.guidance_scale=4 model.noise_scheduler.prediction_type=sample \
+    model.denoiser.stage_dim="256*4" \
+    ckpt_path="checkpoints/pretrained/HumanML3D/hml3d.ckpt" \
+    retrieval_only=false model.metrics.enable_mm_metric=false
+```
+
+For KIT-ML:
+
+```bash
+python src/eval.py trainer.devices="[0]" data=kit_event_final data.test_batch_size=128 \
+    model=event_final \
+    model.guidance_scale=4 model.noise_scheduler.prediction_type=sample \
+    model.denoiser.stage_dim="256*4" \
+    ckpt_path="checkpoints/pretrained/KIT-ML/kit.ckpt" \
+    retrieval_only=false model.metrics.enable_mm_metric=false
+```
+
+This mode writes:
+
+- TMR-aligned retrieval YAMLs:
+  - `normal.yaml`
+  - `threshold_0.95.yaml`
+  - `nsim.yaml`
+  - `guo.yaml`
+- EventT2M native diffusion evaluation:
+  - `E-native_normal.yaml`
+- raw native metric dump:
+  - `metrics.json`
+
+### Diffusion / native evaluation hyperparameters
+
+When `retrieval_only=false`, the native EventT2M diffusion evaluation is active. You can control it from the command line with Hydra overrides.
+
+Commonly useful knobs:
+
+- `model.guidance_scale=4`
+  - classifier-free guidance scale used during diffusion sampling
+- `model.step_num=10`
+  - number of diffusion sampling steps
+- `model.noise_scheduler.prediction_type=sample`
+  - diffusion prediction type
+- `model.metrics.replicate_times=20`
+  - number of repeated native evaluations used to report mean and confidence interval
+- `model.metrics.enable_mm_metric=false`
+  - whether to compute multimodality metrics; turning this on makes evaluation much slower
+- `model.metrics.mm_num_samples=100`
+  - number of samples used when multimodality evaluation is enabled
+- `data.test_batch_size=128`
+  - dataloader batch size for native evaluation
+- `trainer.devices="[0]"`
+  - GPU device selection
+
+Example with explicit diffusion controls:
+
+```bash
+python src/eval.py trainer.devices="[0]" data=hml3d_event_final data.test_batch_size=64 \
+    model=event_final \
+    model.guidance_scale=5 model.step_num=20 \
+    model.noise_scheduler.prediction_type=sample \
+    model.metrics.replicate_times=5 model.metrics.enable_mm_metric=false \
+    ckpt_path="checkpoints/pretrained/HumanML3D/hml3d.ckpt" \
+    retrieval_only=false
+```
+
+### Notes
+
+- `retrieval_only=true` means: export only TMR-aligned retrieval metrics.
+- `retrieval_only=false` means: run EventT2M native diffusion evaluation first, then export TMR-aligned retrieval metrics.
+- The retrieval YAML naming is intentionally aligned with TMR: `normal.yaml`, `threshold_0.95.yaml`, `nsim.yaml`, `guo.yaml`.
+- The `E-` prefix in `E-native_normal.yaml` is used to distinguish EventT2M native output from TMR-style retrieval output.
+- Setting `model.metrics.enable_mm_metric=true` will significantly increase runtime.
+- If your environment uses a different GPU syntax, adjust `trainer.devices` accordingly.
+
