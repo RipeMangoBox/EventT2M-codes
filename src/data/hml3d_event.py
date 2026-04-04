@@ -41,7 +41,7 @@ class HumanML3DDataModule(LightningDataModule):
         self.dataloader_options = {
             "num_workers": num_workers,
             "pin_memory": pin_memory,
-            "persistent_workers": False,
+            "persistent_workers": num_workers > 0,
             "collate_fn": gcn_collate
         }
 

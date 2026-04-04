@@ -71,18 +71,42 @@ from TMR_model_wrapper import TMR_Wrapper
 from pathlib import Path
 
 class TMRWrapperEncoder(nn.Module):
-    def __init__(self, path="third_packages/TMR/models/tmr_humanml3d_guoh3dfeats", freeze=True):
+    def __init__(self, path="third_packages/TMR/models/tmr_humanml3d_guoh3dfeats", freeze=True, cache_text_embeddings=True):
         super().__init__()
         tmr_path = Path(path)
         self.tmr = TMR_Wrapper(tmr_path)
+        self.cache_text_embeddings = cache_text_embeddings
+        self._text_cache: Dict[str, torch.Tensor] = {}
         if freeze:
             for p in self.tmr.parameters():
                 p.requires_grad = False
         self.tmr.eval()
 
+    def _encode_and_cache(self, texts: List[str]) -> None:
+        unique_texts = []
+        seen = set()
+        for text in texts:
+            if text not in self._text_cache and text not in seen:
+                unique_texts.append(text)
+                seen.add(text)
+
+        if not unique_texts:
+            return
+
+        latents = self.tmr.encode_text(unique_texts).detach().cpu()
+        for text, latent in zip(unique_texts, latents):
+            self._text_cache[text] = latent
+
     def forward(self, texts, device, **kwargs):
+        texts = list(texts)
         with torch.no_grad():
-            latents = self.tmr.encode_text(texts)
-            
+            if self.cache_text_embeddings:
+                self._encode_and_cache(texts)
+                latents = torch.stack([
+                    self._text_cache[text].to(device, non_blocking=True) for text in texts
+                ], dim=0)
+            else:
+                latents = self.tmr.encode_text(texts)
+
         return {"text_emb": latents, "hidden": None, "mask": None}
     

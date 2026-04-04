@@ -5,7 +5,7 @@ batch_size: 128
 val_batch_size: -1
 test_batch_size: 128
 num_workers: 8
-pin_memory: False
+pin_memory: True
 njoints: 21
 dataset_name: kit
 

@@ -181,14 +181,16 @@ class EventMotionGeneration(L.LightningModule):
         self.evaluate(batch, split='val', batch_idx=batch_idx)
 
     def on_validation_epoch_end(self):
+        if self.trainer.sanity_checking:
+            self.t2m_metrics.reset()
+            return
+
         results = {}
-        metric_output = self.t2m_metrics.compute(sanity_flag=self.trainer.sanity_checking)
+        metric_output = self.t2m_metrics.compute(sanity_flag=False)
         results.update({f"Metrics/{key}": value.item() for key, value in metric_output.items()})
         self.t2m_metrics.reset()
         results.update({"epoch": self.trainer.current_epoch, "step": self.global_step,})
-
-        if self.trainer.sanity_checking is False:
-            self.log_dict(results, sync_dist=True)
+        self.log_dict(results, sync_dist=True)
         
         # current_fid = float('inf')
         # if not self.trainer.sanity_checking and self.global_rank == 0:

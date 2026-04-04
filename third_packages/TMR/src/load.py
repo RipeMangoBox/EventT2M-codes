@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from omegaconf import DictConfig
 import logging
 import hydra
@@ -8,12 +9,43 @@ from src.config import read_config
 logger = logging.getLogger(__name__)
 
 
+def _summarize_run_dir(run_dir: str, limit: int = 8) -> str:
+    run_dir_path = Path(run_dir)
+    if not run_dir_path.exists():
+        return "run_dir does not exist"
+
+    entries = sorted(run_dir_path.iterdir(), key=lambda path: path.name)
+    if not entries:
+        return "run_dir is empty"
+
+    summary = [f"{entry.name}{'/' if entry.is_dir() else ''}" for entry in entries[:limit]]
+    if len(entries) > limit:
+        summary.append("...")
+    return ", ".join(summary)
+
+
+def _raise_missing_weights_error(run_dir: str, ckpt_name: str) -> None:
+    ckpt_path = os.path.join(run_dir, f"logs/checkpoints/{ckpt_name}.ckpt")
+    pt_path = os.path.join(run_dir, f"{ckpt_name}_weights")
+    available_entries = _summarize_run_dir(run_dir)
+
+    raise FileNotFoundError(
+        "TMR weights are missing. "
+        f"Expected either extracted module weights at '{pt_path}' "
+        f"or a Lightning checkpoint at '{ckpt_path}'. "
+        f"Available entries under run_dir '{run_dir}': {available_entries}. "
+        "Please download/unzip the pretrained TMR model files into this run_dir before starting Event-T2M training."
+    )
+
+
 # split the lightning checkpoint into
 # seperate state_dict modules for faster loading
 def extract_ckpt(run_dir, ckpt_name="last"):
     import torch
 
     ckpt_path = os.path.join(run_dir, f"logs/checkpoints/{ckpt_name}.ckpt")
+    if not os.path.exists(ckpt_path):
+        _raise_missing_weights_error(run_dir, ckpt_name)
 
     extracted_path = os.path.join(run_dir, f"{ckpt_name}_weights")
     os.makedirs(extracted_path, exist_ok=True)
@@ -23,7 +55,6 @@ def extract_ckpt(run_dir, ckpt_name="last"):
     state_dict = ckpt_dict["state_dict"]
     module_names = list(set([x.split(".")[0] for x in state_dict.keys()]))
 
-    # should be ['motion_encoder', 'text_encoder', 'motion_decoder'] for example
     for module_name in module_names:
         path = new_path_template.format(module_name)
         sub_state_dict = {
@@ -35,7 +66,6 @@ def extract_ckpt(run_dir, ckpt_name="last"):
 
 
 def load_model(run_dir, **params):
-    # Load last config
     cfg = read_config(run_dir)
     cfg.run_dir = run_dir
     return load_model_from_cfg(cfg, **params)
@@ -48,15 +78,19 @@ def load_model_from_cfg(cfg, ckpt_name="last", device="cpu", eval_mode=True):
     run_dir = cfg.run_dir
     model = hydra.utils.instantiate(cfg.model)
 
-    # Loading modules one by one
-    # motion_encoder / text_encoder / text_decoder
     pt_path = os.path.join(run_dir, f"{ckpt_name}_weights")
+    ckpt_path = os.path.join(run_dir, f"logs/checkpoints/{ckpt_name}.ckpt")
 
-    if not os.path.exists(pt_path):
-        logger.info("The extracted model is not found. Split into submodules..")
-        extract_ckpt(run_dir, ckpt_name)
+    weights_ready = os.path.exists(pt_path) and len(os.listdir(pt_path)) > 0
+    if not weights_ready:
+        if os.path.exists(ckpt_path):
+            logger.info("The extracted model is not found. Split into submodules..")
+            extract_ckpt(run_dir, ckpt_name)
+            weights_ready = os.path.exists(pt_path) and len(os.listdir(pt_path)) > 0
+        else:
+            _raise_missing_weights_error(run_dir, ckpt_name)
 
-    assert os.path.exists(pt_path) and len(os.listdir(pt_path)) > 0
+    assert weights_ready
     for fname in os.listdir(pt_path):
         module_name, ext = os.path.splitext(fname)
 

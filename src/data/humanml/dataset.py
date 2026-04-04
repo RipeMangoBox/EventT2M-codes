@@ -42,7 +42,6 @@ class T2MDataset(data.Dataset):
         self.is_mm = False
 
         self.prepare()
-        print("num:", self.__len__())   
 
     def prepare(self):
         for key in self.data_dict:

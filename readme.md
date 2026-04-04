@@ -104,6 +104,28 @@ python src/train.py trainer.devices="[2,3]" logger=wandb data=kit_event_final \
     model.noise_scheduler.prediction_type=sample trainer.precision=bf16-mixed
 ```
 
+### Training hyperparameters
+
+Commonly useful knobs (Hydra overrides):
+
+- `model.text_encoder.cache_text_embeddings=true` (default: `true`)
+  - Cache TMR text embeddings in memory across training steps.
+  - Safe because `encode_text` uses `sample_mean=True` — the output is fully deterministic given the same text and weights, regardless of device, random seed, or run.
+  - Eliminates redundant frozen text encoder forward passes and reduces per-step overhead noticeably at large batch sizes.
+  - Set to `false` to disable caching, e.g. when debugging the text encoder or if you modify its behaviour to introduce stochasticity.
+- `data.batch_size=512`
+  - training batch size
+- `data.repeat_dataset=5`
+  - number of times the dataset is repeated per epoch (effectively multiplies steps per epoch)
+- `trainer.max_epochs=600`
+  - total training epochs
+- `model.guidance_scale=4`
+  - classifier-free guidance scale
+- `model.noise_scheduler.prediction_type=sample`
+  - diffusion prediction type
+- `trainer.precision=bf16-mixed`
+  - mixed precision mode; `bf16-mixed` is recommended for modern GPUs
+
 ## Evaluation
 
 This workspace supports two evaluation modes through `src/eval.py` only. The helper shell wrapper has been removed on purpose, so please run evaluation directly with the commands below.
