@@ -36,6 +36,8 @@ log = RankedLogger(__name__, rank_zero_only=True)
 THRESHOLD = 0.95
 GUO_BATCH_SIZE = 32
 SENTENCE_EMBEDDER = "sentence-transformers/all-mpnet-base-v2"
+TMR_PREFIX = "TMR-"
+EVT_PREFIX = "EVT-"
 
 
 def save_metrics_yaml(path: str, metrics: Dict[str, Any]) -> None:
@@ -327,6 +329,7 @@ def collect_retrieval_embeddings_from_tmr_data(
     model: LightningModule,
     protocol_samples: List[Dict[str, Any]],
     protocol: str,
+    nsim_text_mode: str = "average_all",
 ):
     retrieval_encoder = _get_tmr_retrieval_encoder(model)
     if retrieval_encoder is None:
@@ -373,9 +376,15 @@ def collect_retrieval_embeddings_from_tmr_data(
 
         if protocol == "nsim":
             caption_candidates = sample["captions"] or [sample["caption"]]
-            text_batch = retrieval_encoder.encode_text(caption_candidates)
-            text_emb = text_batch.mean(dim=0)
-            captions.append(caption_candidates[0])
+            if nsim_text_mode == "average_all":
+                text_batch = retrieval_encoder.encode_text(caption_candidates)
+                text_emb = text_batch.mean(dim=0)
+                captions.append(caption_candidates[0])
+            elif nsim_text_mode == "first_caption":
+                text_emb = retrieval_encoder.encode_text([sample["caption"]])[0]
+                captions.append(sample["caption"])
+            else:
+                raise ValueError(f"Unsupported nsim_text_mode: {nsim_text_mode}")
         else:
             text_emb = retrieval_encoder.encode_text([sample["caption"]])[0]
             captions.append(sample["caption"])
@@ -386,13 +395,20 @@ def collect_retrieval_embeddings_from_tmr_data(
     return np.asarray(text_embs), np.asarray(motion_embs), captions
 
 
-def export_retrieval_protocol_metrics(cfg: DictConfig, model: LightningModule) -> Dict[str, Dict[str, float]]:
+def compute_retrieval_protocol_metrics(
+    cfg: DictConfig,
+    model: LightningModule,
+    nsim_text_mode: str,
+) -> Dict[str, Dict[str, float]]:
     protocol_metrics = {}
     sentence_embedder = SentenceEmbedder(device=str(model.device))
 
     normal_samples = load_tmr_aligned_protocol_data(cfg, protocol="normal")
     normal_text_embs, normal_motion_embs, normal_captions = collect_retrieval_embeddings_from_tmr_data(
-        model, normal_samples, protocol="normal"
+        model,
+        normal_samples,
+        protocol="normal",
+        nsim_text_mode=nsim_text_mode,
     )
     normal_sim = get_sim_matrix(normal_text_embs, normal_motion_embs)
     normal_sent_embs = sentence_embedder.encode(normal_captions)
@@ -401,26 +417,59 @@ def export_retrieval_protocol_metrics(cfg: DictConfig, model: LightningModule) -
     protocol_metrics[f"threshold_{THRESHOLD}"] = all_contrastive_metrics(
         normal_sim, normal_sent_embs, threshold=THRESHOLD
     )
-    protocol_metrics["guo"] = compute_guo_metrics(normal_sim)
+    sorted_idx = np.argsort(np.asarray([sample["keyid"] for sample in normal_samples]))
+    protocol_metrics["guo"] = compute_guo_metrics(normal_sim[np.ix_(sorted_idx, sorted_idx)])
 
     nsim_samples = load_tmr_aligned_protocol_data(cfg, protocol="nsim")
     nsim_text_embs, nsim_motion_embs, _nsim_captions = collect_retrieval_embeddings_from_tmr_data(
-        model, nsim_samples, protocol="nsim"
+        model,
+        nsim_samples,
+        protocol="nsim",
+        nsim_text_mode=nsim_text_mode,
     )
     nsim_sim = get_sim_matrix(nsim_text_embs, nsim_motion_embs)
     protocol_metrics["nsim"] = all_contrastive_metrics(nsim_sim)
-
-    save_dir = resolve_eval_save_dir(cfg)
-    os.makedirs(save_dir, exist_ok=True)
-    for protocol_name, metrics in protocol_metrics.items():
-        metric_yaml = os.path.join(save_dir, f"{protocol_name}.yaml")
-        save_metrics_yaml(metric_yaml, _to_builtin(metrics))
-        log.info(f"TMR-aligned retrieval YAML metrics saved to {metric_yaml}")
-
     return protocol_metrics
 
 
-def export_event_native_metrics_yaml(save_dir: str, metrics: Dict[str, Any], prefix: str = "E-") -> str:
+def save_prefixed_retrieval_metrics(
+    save_dir: str,
+    protocol_metrics: Dict[str, Dict[str, float]],
+    prefix: str,
+) -> None:
+    for protocol_name, metrics in protocol_metrics.items():
+        metric_yaml = os.path.join(save_dir, f"{prefix}{protocol_name}.yaml")
+        save_metrics_yaml(metric_yaml, _to_builtin(metrics))
+        log.info(f"Retrieval YAML metrics saved to {metric_yaml}")
+
+
+def export_retrieval_protocol_metrics(cfg: DictConfig, model: LightningModule) -> Dict[str, Dict[str, Dict[str, float]]]:
+    tmr_protocol_metrics = compute_retrieval_protocol_metrics(
+        cfg,
+        model,
+        nsim_text_mode="first_caption",
+    )
+    evt_protocol_metrics = compute_retrieval_protocol_metrics(
+        cfg,
+        model,
+        nsim_text_mode="average_all",
+    )
+
+    save_dir = resolve_eval_save_dir(cfg)
+    os.makedirs(save_dir, exist_ok=True)
+
+    save_prefixed_retrieval_metrics(save_dir, tmr_protocol_metrics, prefix=TMR_PREFIX)
+    save_prefixed_retrieval_metrics(save_dir, evt_protocol_metrics, prefix=EVT_PREFIX)
+
+    for protocol_name, metrics in evt_protocol_metrics.items():
+        metric_yaml = os.path.join(save_dir, f"{protocol_name}.yaml")
+        save_metrics_yaml(metric_yaml, _to_builtin(metrics))
+        log.info(f"EventT2M-native retrieval YAML metrics saved to {metric_yaml}")
+
+    return {"TMR": tmr_protocol_metrics, "EVT": evt_protocol_metrics}
+
+
+def export_event_native_metrics_yaml(save_dir: str, metrics: Dict[str, Any], prefix: str = "") -> str:
     metric_yaml = os.path.join(save_dir, f"{prefix}native_normal.yaml")
     save_metrics_yaml(metric_yaml, {_k: _to_builtin(_v) for _k, _v in metrics.items()})
     return metric_yaml
@@ -511,15 +560,18 @@ def evaluate(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         with open(metric_file, "w", encoding="utf-8") as f:
             json.dump({_k: _to_builtin(_v) for _k, _v in all_metrics_new.items()}, f, indent=4)
 
-        native_metric_yaml = export_event_native_metrics_yaml(save_dir, all_metrics_new, prefix="E-")
+        native_metric_yaml = export_event_native_metrics_yaml(save_dir, all_metrics_new, prefix="")
+        native_metric_yaml_evt = export_event_native_metrics_yaml(save_dir, all_metrics_new, prefix=EVT_PREFIX)
 
         log.info(f"Testing done, the metrics are saved to {str(metric_file)}")
         log.info(f"Event native YAML metrics saved to {str(native_metric_yaml)}")
+        log.info(f"Prefixed event native YAML metrics saved to {str(native_metric_yaml_evt)}")
     else:
         log.info("Skipping native diffusion evaluation and exporting retrieval metrics only.")
 
     retrieval_protocol_metrics = export_retrieval_protocol_metrics(cfg, model)
-    log.info(f"Retrieval-style protocol metrics exported: {list(retrieval_protocol_metrics.keys())}")
+    for variant_name, variant_metrics in retrieval_protocol_metrics.items():
+        log.info(f"{variant_name}-style protocol metrics exported: {list(variant_metrics.keys())}")
 
     return all_metrics_new, object_dict
 

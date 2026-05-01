@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 import numpy as np
-from src.rifke import canonicalize_rotation
+from ..rifke import canonicalize_rotation
 
 logger = logging.getLogger("matplotlib.animation")
 logger.setLevel(logging.ERROR)

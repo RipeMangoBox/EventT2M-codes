@@ -130,9 +130,9 @@ Commonly useful knobs (Hydra overrides):
 
 This workspace supports two evaluation modes through `src/eval.py` only. The helper shell wrapper has been removed on purpose, so please run evaluation directly with the commands below.
 
-### Mode 1: TMR-aligned retrieval only
+### Mode 1: Retrieval protocols only
 
-Use this mode when you only want fair retrieval comparison against TMR / MotionPatches. It skips EventT2M's native diffusion evaluation and exports only the TMR-aligned retrieval YAMLs.
+Use this mode when you only want retrieval protocol metrics. It skips EventT2M's native diffusion evaluation.
 
 For HumanML3D:
 
@@ -156,16 +156,15 @@ python src/eval.py trainer.devices="[0]" data=kit_event_final data.test_batch_si
     retrieval_only=true model.metrics.enable_mm_metric=false
 ```
 
-This mode writes the following TMR-aligned retrieval files into the checkpoint folder's `eval/` directory:
+This mode writes the following retrieval files into the checkpoint folder's `eval/` directory:
 
-- `normal.yaml`
-- `threshold_0.95.yaml`
-- `nsim.yaml`
-- `guo.yaml`
+- EventT2M own style (unprefixed): `normal.yaml`, `threshold_0.95.yaml`, `nsim.yaml`, `guo.yaml`
+- TMR style: `TMR-normal.yaml`, `TMR-threshold_0.95.yaml`, `TMR-nsim.yaml`, `TMR-guo.yaml`
+- EVT style: `EVT-normal.yaml`, `EVT-threshold_0.95.yaml`, `EVT-nsim.yaml`, `EVT-guo.yaml`
 
 No EventT2M native diffusion report is produced in this mode.
 
-### Mode 2: TMR-aligned retrieval + EventT2M native evaluation
+### Mode 2: Retrieval protocols + EventT2M native evaluation
 
 Use this mode when you want both:
 
@@ -196,13 +195,13 @@ python src/eval.py trainer.devices="[0]" data=kit_event_final data.test_batch_si
 
 This mode writes:
 
-- TMR-aligned retrieval YAMLs:
-  - `normal.yaml`
-  - `threshold_0.95.yaml`
-  - `nsim.yaml`
-  - `guo.yaml`
+- retrieval YAMLs:
+  - EventT2M own style (unprefixed): `normal.yaml`, `threshold_0.95.yaml`, `nsim.yaml`, `guo.yaml`
+  - TMR style: `TMR-normal.yaml`, `TMR-threshold_0.95.yaml`, `TMR-nsim.yaml`, `TMR-guo.yaml`
+  - EVT style: `EVT-normal.yaml`, `EVT-threshold_0.95.yaml`, `EVT-nsim.yaml`, `EVT-guo.yaml`
 - EventT2M native diffusion evaluation:
-  - `E-native_normal.yaml`
+  - EventT2M own style (unprefixed): `native_normal.yaml`
+  - EVT style: `EVT-native_normal.yaml`
 - raw native metric dump:
   - `metrics.json`
 
@@ -243,10 +242,35 @@ python src/eval.py trainer.devices="[0]" data=hml3d_event_final data.test_batch_
 
 ### Notes
 
-- `retrieval_only=true` means: export only TMR-aligned retrieval metrics.
-- `retrieval_only=false` means: run EventT2M native diffusion evaluation first, then export TMR-aligned retrieval metrics.
-- The retrieval YAML naming is intentionally aligned with TMR: `normal.yaml`, `threshold_0.95.yaml`, `nsim.yaml`, `guo.yaml`.
-- The `E-` prefix in `E-native_normal.yaml` is used to distinguish EventT2M native output from TMR-style retrieval output.
+- `retrieval_only=true` means: export retrieval protocol metrics only (no native diffusion evaluation).
+- `retrieval_only=false` means: run EventT2M native diffusion evaluation first, then export retrieval protocol metrics.
+- Naming policy: unprefixed files are EventT2M own evaluation style.
+- Prefix policy: style-specific exports are prefixed (for example `TMR-*`, `EVT-*`).
 - Setting `model.metrics.enable_mm_metric=true` will significantly increase runtime.
 - If your environment uses a different GPU syntax, adjust `trainer.devices` accordingly.
 
+## Visualization Demo (Gradio, TMR-aligned + Event Decomposition)
+
+EventT2M now includes a Gradio retrieval demo aligned with the TMR/MotionPatches layout:
+
+- same retrieval controls (`Text prompt`, split selector, number of videos, examples, 24-result grid)
+- local `animations/*.mp4` playback
+- per-result score/caption display
+- additional EventT2M event-level decomposition panel
+  - prompt decomposition (manual or auto)
+  - retrieved sample decomposition (if `texts_decomposed/*.txt` is available)
+
+Launch it in the `event-t2m` environment:
+
+```bash
+conda run -n event-t2m python app.py \
+    --tmr_model_dir third_packages/TMR/models/tmr_humanml3d_guoh3dfeats \
+    --data_root ./dataset/HumanML3D \
+    --port 7862
+```
+
+Optional arguments:
+
+- `--latents_dir <path>`: override where `humanml3d_all_unit.npy` and key-id jsons are loaded from
+- `--device cuda:0` or `--device cpu`
+- `--share` to enable Gradio sharing

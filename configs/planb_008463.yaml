@@ -1,0 +1,27 @@
+defaults:
+- _self_
+- data: hml3d_event_final
+- model: event_final
+- logger: null
+- trainer: gpu
+- paths: default
+- extras: default
+- hydra: default
+task_name: visual
+tags:
+- dev
+ckpt_path: checkpoints/pretrained/HumanML3D/hml3d.ckpt
+seed: null
+data_dir: /home/ripemangobox/Coding/Github/Motion/datasets/HumanML3D/HumanML3D
+save_path: ./logs/planb_seed_pool_20260427/
+length: 199
+repeats: 1
+device: '0'
+text: a man walks forward, then squats to pick something up with both hands, stands
+  back up, and resumes walking
+decomposed_text:
+- a man walks forward.
+- a man squats to pick something up with both hands.
+- a man stands back up.
+- a man resumes walking.
+sample_name: planb_008463

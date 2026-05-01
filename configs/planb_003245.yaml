@@ -1,0 +1,26 @@
+defaults:
+- _self_
+- data: hml3d_event_final
+- model: event_final
+- logger: null
+- trainer: gpu
+- paths: default
+- extras: default
+- hydra: default
+task_name: visual
+tags:
+- dev
+ckpt_path: checkpoints/pretrained/HumanML3D/hml3d.ckpt
+seed: null
+data_dir: /home/ripemangobox/Coding/Github/Motion/datasets/HumanML3D/HumanML3D
+save_path: ./logs/planb_seed_pool_20260427/
+length: 199
+repeats: 1
+device: '0'
+text: a person raises both arms above their head while standing, the fingers of both
+  hands are touching when raised, then the arms are lowered
+decomposed_text:
+- a person raises both arms above their head while standing.
+- a person's fingers of both hands are touching when raised.
+- a person lowers their arms.
+sample_name: planb_003245

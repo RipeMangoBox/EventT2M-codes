@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -31,6 +31,10 @@ class MiniConformer(nn.Module):
         self.cross_attn = nn.MultiheadAttention(
             d_model, nhead, dropout=dropout, batch_first=True
         )
+        self.modebug_attention_observation = False
+        self.modebug_attention_name = None
+        self.modebug_attention_records = None
+        self.modebug_attention_context = {}
         self.conv_ln = nn.LayerNorm(d_model)
         self.pw_conv1 = nn.Conv1d(d_model, 2 * d_model, 1)
         self.glu = nn.GLU(dim=1)
@@ -54,6 +58,33 @@ class MiniConformer(nn.Module):
             nn.Dropout(dropout),
         )
 
+    def set_modebug_attention_observation(
+        self,
+        enabled: bool,
+        records: Optional[List[Dict[str, Any]]] = None,
+        name: Optional[str] = None,
+    ):
+        self.modebug_attention_observation = enabled
+        self.modebug_attention_records = records
+        self.modebug_attention_name = name
+
+    def set_modebug_attention_context(self, context: Optional[Dict[str, Any]] = None):
+        self.modebug_attention_context = dict(context or {})
+
+    def _record_modebug_cross_attention(self, weights: torch.Tensor):
+        if self.modebug_attention_records is None:
+            return
+        record = dict(self.modebug_attention_context)
+        record.update(
+            {
+                "module": self.modebug_attention_name,
+                "kind": "cross_attn",
+                "shape": list(weights.shape),
+                "weights": weights.detach().cpu(),
+            }
+        )
+        self.modebug_attention_records.append(record)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -74,11 +105,21 @@ class MiniConformer(nn.Module):
             key_padding = None
             if cross_mask is not None:
                 key_padding = ~cross_mask
-            x = x + self.cross_attn(
-                x, cross, cross,
-                key_padding_mask=key_padding,
-                need_weights=False
-            )[0]
+            if self.modebug_attention_observation:
+                cross_out, cross_weights = self.cross_attn(
+                    x, cross, cross,
+                    key_padding_mask=key_padding,
+                    need_weights=True,
+                    average_attn_weights=False,
+                )
+                self._record_modebug_cross_attention(cross_weights)
+                x = x + cross_out
+            else:
+                x = x + self.cross_attn(
+                    x, cross, cross,
+                    key_padding_mask=key_padding,
+                    need_weights=False
+                )[0]
 
         y = self.conv_ln(x)
         y = y.transpose(1, 2)
@@ -280,6 +321,27 @@ class EventT2M(nn.Module):
             nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
             nn.Linear(in_dim, motion_dim),
         )
+        self.modebug_attention_records: List[Dict[str, Any]] = []
+
+    def set_modebug_attention_observation(self, enabled: bool, clear: bool = True):
+        if clear:
+            self.clear_modebug_attention_observation()
+        for idx, blk in enumerate(self.layers):
+            blk.mixed.global_conformer.set_modebug_attention_observation(
+                enabled,
+                self.modebug_attention_records,
+                f"denoiser.layers.{idx}.mixed.global_conformer.cross_attn",
+            )
+
+    def clear_modebug_attention_observation(self):
+        self.modebug_attention_records.clear()
+
+    def set_modebug_attention_context(self, **context):
+        for blk in self.layers:
+            blk.mixed.global_conformer.set_modebug_attention_context(context)
+
+    def get_modebug_attention_records(self):
+        return self.modebug_attention_records
 
     def forward(
         self,

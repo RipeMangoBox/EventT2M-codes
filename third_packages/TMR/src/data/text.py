@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from abc import ABC, abstractmethod
 
-from src.model import TextToEmb
+from ..model import TextToEmb
 
 
 class TextEmbeddings(ABC):

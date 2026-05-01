@@ -1,0 +1,35 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - data: hml3d_event_final # choose datamodule with `test_dataloader()` for evaluation
+  - model: event_final
+  - logger: null
+  - trainer: gpu
+  - paths: default
+  - extras: default
+  - hydra: default
+
+task_name: "visual"
+
+tags: ["dev"]
+
+# passing checkpoint path is necessary for evaluation
+ckpt_path: "checkpoints/pretrained/HumanML3D/hml3d.ckpt"
+
+# seed for random number generators in pytorch, numpy and python.random
+seed: null
+
+data_dir: "./dataset/HumanML3D"
+
+save_path: "./visual_datas/"
+
+# text: "a man walks forward two steps and kicks his right foot into the air and kicks his left foot into the air and walks backward two steps and pauses and kicks into the air with his left foot and kicks into the air with his left foot."
+
+text: "a person walks forward to the left, picks something up and walks back and then shakes what is in the hand"
+
+decomposed_text:
+  - "a person walks forward to the left."
+  - "a person picks something up."
+  - "a person walks back."
+  - "a person shakes what is in the hand."

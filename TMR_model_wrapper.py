@@ -9,6 +9,21 @@ import torch
 from torch import Tensor
 from torch import nn as nn
 import numpy as np
+from omegaconf import DictConfig, ListConfig
+
+
+def rewrite_tmr_targets(node):
+    if isinstance(node, (dict, DictConfig)):
+        for key, value in node.items():
+            if key == "_target_" and isinstance(value, str) and value.startswith("src."):
+                node[key] = f"third_packages.TMR.{value}"
+            else:
+                rewrite_tmr_targets(value)
+        return
+
+    if isinstance(node, (list, ListConfig)):
+        for item in node:
+            rewrite_tmr_targets(item)
 
 
 def extend_namespace_package(package_name: str, path: Path):
@@ -58,6 +73,7 @@ class TMR_Wrapper(nn.Module):
         self.base_cfg = read_config(str(model_dir))
 
         cfg = copy.deepcopy(self.base_cfg)
+        rewrite_tmr_targets(cfg)
 
         abs_model_dir = (PROJECT_ROOT / model_dir).resolve()
 
@@ -91,7 +107,8 @@ class TMR_Wrapper(nn.Module):
         self.latent_dim = 512
 
         latent_path = PROJECT_ROOT / "third_packages" / "TMR" / "models" / "tmr_humanml3d_guoh3dfeats" / "latents" / "humanml3d_all.npy"
-        self.humanml3d_all = torch.from_numpy(np.load(str(latent_path))).cuda()
+        humanml3d_all = torch.from_numpy(np.load(str(latent_path))).float()
+        self.register_buffer("humanml3d_all", humanml3d_all, persistent=False)
         self.cos = nn.CosineSimilarity(dim=1, eps=1e-6)
 
     def normalize(self, motion):

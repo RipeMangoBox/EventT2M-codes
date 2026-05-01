@@ -1,0 +1,28 @@
+defaults:
+- _self_
+- data: hml3d_event_final
+- model: event_final
+- logger: null
+- trainer: gpu
+- paths: default
+- extras: default
+- hydra: default
+task_name: visual
+tags:
+- dev
+ckpt_path: checkpoints/pretrained/HumanML3D/hml3d.ckpt
+seed: null
+data_dir: /home/ripemangobox/Coding/Github/Motion/datasets/HumanML3D/HumanML3D
+save_path: ./logs/planb_seed_pool_20260427/
+length: 199
+repeats: 1
+device: '0'
+text: a man walks forward, then turns around and walks back before facing back and
+  standing still
+decomposed_text:
+- a man walks forward.
+- a man turns around.
+- a man walks back.
+- a man faces back.
+- a man stands still.
+sample_name: planb_001969

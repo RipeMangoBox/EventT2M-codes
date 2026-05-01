@@ -278,7 +278,15 @@ class EventMotionGeneration(L.LightningModule):
             self.t2m_metrics.update(t2m_text_emb, t2m_motion_gen_emb, t2m_motion_gt_emb, length)
 
     @torch.no_grad()
-    def sample_motion(self, gt_motion, length, text, decomposed):
+    def sample_motion(
+        self,
+        gt_motion,
+        length,
+        text,
+        decomposed,
+        modebug_attention_observation=False,
+        modebug_attention_context=None,
+    ):
         B, L, D = gt_motion.shape
         repeated_text = text.copy()
         repeated_text.extend([""] * B)
@@ -300,27 +308,50 @@ class EventMotionGeneration(L.LightningModule):
         else:
             denoiser = self.denoiser
 
+        attention_records = None
+        if modebug_attention_observation:
+            if not hasattr(denoiser, "set_modebug_attention_observation"):
+                raise RuntimeError("Denoiser does not support MoDebug attention observation")
+            denoiser.set_modebug_attention_observation(True, clear=True)
+
         prediction_type = self.noise_scheduler.config.prediction_type
         self.sample_scheduler.set_timesteps(self.hparams.step_num)
-        for i, t in enumerate(time_steps):
-            output = denoiser(pred_motion.repeat([2, 1, 1]), padding_mask.repeat([2, 1,]),
-                                       t.repeat([2 * B]), text_embed, decomposed_embed, decomposed_mask)
+        try:
+            for i, t in enumerate(time_steps):
+                if modebug_attention_observation:
+                    context = dict(modebug_attention_context or {})
+                    context.update(
+                        {
+                            "sample_step": i,
+                            "timestep": int(t.item()),
+                            "cfg_batch": "conditional_unconditional",
+                        }
+                    )
+                    denoiser.set_modebug_attention_context(**context)
+                output = denoiser(pred_motion.repeat([2, 1, 1]), padding_mask.repeat([2, 1,]),
+                                           t.repeat([2 * B]), text_embed, decomposed_embed, decomposed_mask)
 
-            if prediction_type == "epsilon":
-                cond_eps, uncond_eps = output.chunk(2)
-            elif prediction_type == "sample":
-                cond_x0, uncond_x0 = output.chunk(2)
-                cond_eps, uncond_eps = self.obtain_eps_when_predicting_x_0(cond_x0, uncond_x0, t, pred_motion)
-            else:
-                raise ValueError(f"{prediction_type} not supported!")
-            # pred_noise = (1 + self.hparams.guidance_scale) * cond_eps - self.hparams.guidance_scale * uncond_eps
-            pred_noise = uncond_eps + self.hparams.guidance_scale * (cond_eps - uncond_eps)
-            if isinstance(self.sample_scheduler, UniPCMultistepScheduler) or isinstance(self.sample_scheduler, DDPMScheduler):
-                pred_motion = self.sample_scheduler.step(pred_noise, t, pred_motion).prev_sample.float()
-            else:
-                pred_motion = self.sample_scheduler.step(pred_noise, t, pred_motion, use_clipped_model_output=False).prev_sample.float()
-            pred_motion[~padding_mask] = 0
+                if prediction_type == "epsilon":
+                    cond_eps, uncond_eps = output.chunk(2)
+                elif prediction_type == "sample":
+                    cond_x0, uncond_x0 = output.chunk(2)
+                    cond_eps, uncond_eps = self.obtain_eps_when_predicting_x_0(cond_x0, uncond_x0, t, pred_motion)
+                else:
+                    raise ValueError(f"{prediction_type} not supported!")
+                # pred_noise = (1 + self.hparams.guidance_scale) * cond_eps - self.hparams.guidance_scale * uncond_eps
+                pred_noise = uncond_eps + self.hparams.guidance_scale * (cond_eps - uncond_eps)
+                if isinstance(self.sample_scheduler, UniPCMultistepScheduler) or isinstance(self.sample_scheduler, DDPMScheduler):
+                    pred_motion = self.sample_scheduler.step(pred_noise, t, pred_motion).prev_sample.float()
+                else:
+                    pred_motion = self.sample_scheduler.step(pred_noise, t, pred_motion, use_clipped_model_output=False).prev_sample.float()
+                pred_motion[~padding_mask] = 0
+        finally:
+            if modebug_attention_observation:
+                attention_records = denoiser.get_modebug_attention_records()
+                denoiser.set_modebug_attention_observation(False, clear=False)
 
+        if modebug_attention_observation:
+            return pred_motion, attention_records
         return pred_motion
 
     def obtain_eps_when_predicting_x_0(self, cond_x0, uncond_x0, timestep, x_t):

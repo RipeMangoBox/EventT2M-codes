@@ -4,7 +4,7 @@ from omegaconf import DictConfig
 import logging
 import hydra
 
-from src.config import read_config
+from .config import read_config
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def load_model(run_dir, **params):
 
 
 def load_model_from_cfg(cfg, ckpt_name="last", device="cpu", eval_mode=True):
-    import src.prepare  # noqa
+    from . import prepare  # noqa
     import torch
 
     run_dir = cfg.run_dir
