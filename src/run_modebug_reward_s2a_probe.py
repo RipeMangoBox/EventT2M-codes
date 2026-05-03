@@ -402,10 +402,13 @@ def precompute_embeddings(
 ) -> Dict[str, Dict[str, torch.Tensor]]:
     runtime.model.eval()
     motion_tensors: Dict[str, torch.Tensor] = {}
-    for row in rows:
+    for idx, row in enumerate(rows, start=1):
         sample = data_by_split[row["split"]][row["sample_id"]]
         motion_tensors[row["row_id"]] = encode_motion(runtime, sample["motion"])
+        if idx == 1 or idx % 500 == 0 or idx == len(rows):
+            print(f"[S2A] encoded_motion {idx}/{len(rows)}", flush=True)
     text_tensors = encode_texts(runtime, list(texts.values()), batch_size=batch_size)
+    print(f"[S2A] encoded_texts {len(text_tensors)}", flush=True)
     return {"motion": motion_tensors, "text": text_tensors}
 
 
@@ -573,9 +576,12 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     train_data_path = resolve_path(repo_root, args.train_data)
     val_data_path = resolve_path(repo_root, args.val_data)
+    print(f"[S2A] seed={args.seed} device={args.device} output_dir={output_dir}", flush=True)
+    print(f"[S2A] loading_data train={train_data_path} val={val_data_path}", flush=True)
     train_data = read_data(train_data_path)
     val_data = read_data(val_data_path)
 
+    print("[S2A] selecting_rows", flush=True)
     train_rows, train_manifest_summary = select_rows(
         train_data,
         split="train",
@@ -594,15 +600,24 @@ def main() -> None:
     )
     if not train_rows or not val_rows:
         raise RuntimeError("S2a probe requires non-empty train and val rows.")
+    print(
+        f"[S2A] selected_rows train={len(train_rows)} val={len(val_rows)} "
+        f"train_buckets={train_manifest_summary['event_count_buckets']} "
+        f"val_buckets={val_manifest_summary['event_count_buckets']}",
+        flush=True,
+    )
 
     rows = train_rows + val_rows
     attach_text_keys(rows)
     texts = collect_texts(rows)
+    print(f"[S2A] unique_texts={len(texts)}", flush=True)
 
     tmr_root = resolve_tmr_root(repo_root, args.tmr_root)
     tmr_run_dir = Path(args.tmr_run_dir).resolve() if args.tmr_run_dir else tmr_root / "models" / "tmr_humanml3d_guoh3dfeats"
+    print(f"[S2A] loading_tmr run_dir={tmr_run_dir}", flush=True)
     runtime = load_tmr_runtime(repo_root=repo_root, tmr_root=tmr_root, run_dir=tmr_run_dir, device=args.device)
 
+    print("[S2A] precomputing_embeddings", flush=True)
     tensors = precompute_embeddings(
         runtime,
         rows,
@@ -643,6 +658,7 @@ def main() -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     history = []
+    print(f"[S2A] training epochs={args.epochs} batch_size={args.batch_size}", flush=True)
     for epoch in range(1, args.epochs + 1):
         train_metrics = train_one_epoch(
             model,
