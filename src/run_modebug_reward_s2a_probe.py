@@ -76,16 +76,21 @@ class PairDataset(Dataset):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MoDebug S2a frozen-TMR reward head sanity probe.")
+    parser.add_argument("--run-stage", type=str, default="s2a", choices=("s2a", "s2b"))
+    parser.add_argument("--ablation-name", type=str, default="main")
     parser.add_argument("--repo-root", type=str, default=None)
     parser.add_argument("--tmr-root", type=str, default=None)
     parser.add_argument("--tmr-run-dir", type=str, default=None)
     parser.add_argument("--train-data", type=str, default="dataset/HumanML3D-E/data_train.npy")
     parser.add_argument("--val-data", type=str, default="dataset/HumanML3D-E/data_val.npy")
+    parser.add_argument("--test-data", type=str, default=None)
     parser.add_argument("--train-events-json", type=str, default="dataset/HumanML3D-E/.tamr_hml3de_gt_events_train.json")
     parser.add_argument("--val-events-json", type=str, default="dataset/HumanML3D-E/.tamr_hml3de_gt_events_val.json")
+    parser.add_argument("--test-events-json", type=str, default="dataset/HumanML3D-E/.tamr_hml3de_gt_events_test.json")
     parser.add_argument("--output-dir", type=str, default="logs/modebug_reward_s2a_probe")
     parser.add_argument("--max-train-samples", type=int, default=5000)
     parser.add_argument("--max-val-samples", type=int, default=1000)
+    parser.add_argument("--max-test-samples", type=int, default=0)
     parser.add_argument("--min-events", type=int, default=2)
     parser.add_argument("--seed", type=int, default=20260502)
     parser.add_argument("--epochs", type=int, default=10)
@@ -100,6 +105,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--embedding-batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--early-stop-patience", type=int, default=0)
+    parser.add_argument("--monitor-metric", type=str, default="drop_paired_acc")
+    parser.add_argument("--monitor-mode", type=str, default="max", choices=("max", "min"))
     parser.add_argument("--no-checkpoint", action="store_true")
     return parser.parse_args()
 
@@ -402,7 +410,7 @@ def encode_motion(runtime: Any, raw_motion: np.ndarray) -> torch.Tensor:
 
 
 @torch.no_grad()
-def encode_texts(runtime: Any, texts: Sequence[str], batch_size: int) -> Dict[str, torch.Tensor]:
+def encode_texts(runtime: Any, texts: Sequence[str], batch_size: int, stage: str) -> Dict[str, torch.Tensor]:
     out: Dict[str, torch.Tensor] = {}
     items = [(text_key(text), text) for text in texts]
     for start in range(0, len(items), batch_size):
@@ -411,6 +419,9 @@ def encode_texts(runtime: Any, texts: Sequence[str], batch_size: int) -> Dict[st
         latents = encode_latents(runtime.model, text_x_dict).detach().cpu().float()
         for idx, (key, _text) in enumerate(batch):
             out[key] = latents[idx]
+        done = min(start + batch_size, len(items))
+        if done == len(items) or done % (batch_size * 50) == 0:
+            print(f"[{stage}] encoded_texts_progress {done}/{len(items)}", flush=True)
     return out
 
 
@@ -420,6 +431,7 @@ def precompute_embeddings(
     data_by_split: Dict[str, Dict[str, Dict[str, Any]]],
     texts: Dict[str, str],
     batch_size: int,
+    stage: str,
 ) -> Dict[str, Dict[str, torch.Tensor]]:
     runtime.model.eval()
     motion_tensors: Dict[str, torch.Tensor] = {}
@@ -427,9 +439,9 @@ def precompute_embeddings(
         sample = data_by_split[row["split"]][row["sample_id"]]
         motion_tensors[row["row_id"]] = encode_motion(runtime, sample["motion"])
         if idx == 1 or idx % 500 == 0 or idx == len(rows):
-            print(f"[S2A] encoded_motion {idx}/{len(rows)}", flush=True)
-    text_tensors = encode_texts(runtime, list(texts.values()), batch_size=batch_size)
-    print(f"[S2A] encoded_texts {len(text_tensors)}", flush=True)
+            print(f"[{stage}] encoded_motion {idx}/{len(rows)}", flush=True)
+    text_tensors = encode_texts(runtime, list(texts.values()), batch_size=batch_size, stage=stage)
+    print(f"[{stage}] encoded_texts {len(text_tensors)}", flush=True)
     return {"motion": motion_tensors, "text": text_tensors}
 
 
@@ -558,7 +570,9 @@ def summarize_deltas(deltas: Dict[str, List[torch.Tensor]]) -> Dict[str, float]:
     return metrics
 
 
-def canonical_dev_metrics(prefix: str, metrics: Dict[str, float]) -> Dict[str, Any]:
+def canonical_dev_metrics(prefix: str, metrics: Dict[str, float], used_for: str | None = None) -> Dict[str, Any]:
+    if used_for is None:
+        used_for = "selection" if prefix.startswith("reward") else "baseline"
     mapping = {
         f"{prefix}_gt_pres_full_vs_drop_paired_acc": metrics.get("drop_paired_acc"),
         f"{prefix}_gt_pres_full_vs_replace_paired_acc": metrics.get("replace_paired_acc"),
@@ -569,7 +583,7 @@ def canonical_dev_metrics(prefix: str, metrics: Dict[str, float]) -> Dict[str, A
         name: {
             "value": value,
             "role": "dev_metric",
-            "used_for": "selection" if "reward_dev" in prefix else "baseline",
+            "used_for": used_for,
         }
         for name, value in mapping.items()
         if value is not None
@@ -588,6 +602,18 @@ def improvement_ci(values: Sequence[float]) -> Dict[str, float | None]:
     return {"mean": mean, "ci95_low": mean - half, "ci95_high": mean + half}
 
 
+def clone_state_dict(model: nn.Module) -> Dict[str, torch.Tensor]:
+    return {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+
+
+def metric_is_better(value: float, best_value: float | None, mode: str) -> bool:
+    if best_value is None:
+        return True
+    if mode == "min":
+        return value < best_value
+    return value > best_value
+
+
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
@@ -597,12 +623,15 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     train_data_path = resolve_path(repo_root, args.train_data)
     val_data_path = resolve_path(repo_root, args.val_data)
-    print(f"[S2A] seed={args.seed} device={args.device} output_dir={output_dir}", flush=True)
-    print(f"[S2A] loading_data train={train_data_path} val={val_data_path}", flush=True)
+    stage = args.run_stage.upper()
+    print(f"[{stage}] seed={args.seed} device={args.device} output_dir={output_dir}", flush=True)
+    print(f"[{stage}] loading_data train={train_data_path} val={val_data_path}", flush=True)
     train_data = read_data(train_data_path)
     val_data = read_data(val_data_path)
+    test_data_path = resolve_path(repo_root, args.test_data) if args.test_data else None
+    test_data = read_data(test_data_path) if test_data_path else None
 
-    print("[S2A] selecting_rows", flush=True)
+    print(f"[{stage}] selecting_rows", flush=True)
     train_rows, train_manifest_summary = select_rows(
         train_data,
         split="train",
@@ -619,32 +648,49 @@ def main() -> None:
         seed=args.seed,
         length_window=args.length_window,
     )
+    test_rows: List[Dict[str, Any]] = []
+    test_manifest_summary: Dict[str, Any] | None = None
+    if test_data is not None:
+        test_rows, test_manifest_summary = select_rows(
+            test_data,
+            split="test",
+            max_samples=args.max_test_samples,
+            min_events=args.min_events,
+            seed=args.seed,
+            length_window=args.length_window,
+        )
     if not train_rows or not val_rows:
         raise RuntimeError("S2a probe requires non-empty train and val rows.")
+    if test_data is not None and not test_rows:
+        raise RuntimeError("S2 test eval requires non-empty test rows.")
     print(
-        f"[S2A] selected_rows train={len(train_rows)} val={len(val_rows)} "
+        f"[{stage}] selected_rows train={len(train_rows)} val={len(val_rows)} test={len(test_rows)} "
         f"train_buckets={train_manifest_summary['event_count_buckets']} "
         f"val_buckets={val_manifest_summary['event_count_buckets']}",
         flush=True,
     )
 
-    rows = train_rows + val_rows
+    rows = train_rows + val_rows + test_rows
     attach_text_keys(rows)
     texts = collect_texts(rows)
-    print(f"[S2A] unique_texts={len(texts)}", flush=True)
+    print(f"[{stage}] unique_texts={len(texts)}", flush=True)
 
     tmr_root = resolve_tmr_root(repo_root, args.tmr_root)
     tmr_run_dir = Path(args.tmr_run_dir).resolve() if args.tmr_run_dir else tmr_root / "models" / "tmr_humanml3d_guoh3dfeats"
-    print(f"[S2A] loading_tmr run_dir={tmr_run_dir}", flush=True)
+    print(f"[{stage}] loading_tmr run_dir={tmr_run_dir}", flush=True)
     runtime = load_tmr_runtime(repo_root=repo_root, tmr_root=tmr_root, run_dir=tmr_run_dir, device=args.device)
 
-    print("[S2A] precomputing_embeddings", flush=True)
+    print(f"[{stage}] precomputing_embeddings", flush=True)
+    data_by_split = {"train": train_data, "val": val_data}
+    if test_data is not None:
+        data_by_split["test"] = test_data
     tensors = precompute_embeddings(
         runtime,
         rows,
-        {"train": train_data, "val": val_data},
+        data_by_split,
         texts,
         batch_size=args.embedding_batch_size,
+        stage=stage,
     )
     emb_dim = int(next(iter(tensors["motion"].values())).shape[-1])
     train_tensors = {
@@ -655,6 +701,10 @@ def main() -> None:
         "motion": {row["row_id"]: tensors["motion"][row["row_id"]] for row in val_rows},
         "text": tensors["text"],
     }
+    test_tensors = {
+        "motion": {row["row_id"]: tensors["motion"][row["row_id"]] for row in test_rows},
+        "text": tensors["text"],
+    } if test_rows else None
 
     generator = torch.Generator()
     generator.manual_seed(args.seed)
@@ -673,13 +723,27 @@ def main() -> None:
         collate_fn=collate_pairs,
         num_workers=args.num_workers,
     )
+    test_loader = DataLoader(
+        PairDataset(test_rows, test_tensors),
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=collate_pairs,
+        num_workers=args.num_workers,
+    ) if test_rows and test_tensors is not None else None
 
     train_device = torch.device(args.device if args.device.startswith("cuda") and torch.cuda.is_available() else "cpu")
     model = RewardHead(emb_dim=emb_dim, hidden_dim=args.hidden_dim, dropout=args.dropout).to(train_device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     history = []
-    print(f"[S2A] training epochs={args.epochs} batch_size={args.batch_size}", flush=True)
+    best_state = clone_state_dict(model)
+    last_state = clone_state_dict(model)
+    best_epoch = 0
+    best_monitor_value: float | None = None
+    best_val_metrics: Dict[str, float] | None = None
+    patience_used = 0
+    stopped_early = False
+    print(f"[{stage}] training epochs={args.epochs} batch_size={args.batch_size}", flush=True)
     for epoch in range(1, args.epochs + 1):
         train_metrics = train_one_epoch(
             model,
@@ -690,11 +754,46 @@ def main() -> None:
             lambda_event_mask=args.lambda_event_mask,
         )
         val_metrics = evaluate_model(model, val_loader, train_device)
-        history.append({"epoch": epoch, "train": train_metrics, "val": val_metrics})
+        monitor_value = val_metrics.get(args.monitor_metric)
+        if monitor_value is None:
+            raise RuntimeError(f"Monitor metric not found in val metrics: {args.monitor_metric}")
+        improved = metric_is_better(monitor_value, best_monitor_value, args.monitor_mode)
+        if improved:
+            best_state = clone_state_dict(model)
+            best_epoch = epoch
+            best_monitor_value = monitor_value
+            best_val_metrics = dict(val_metrics)
+            patience_used = 0
+        else:
+            patience_used += 1
+        history.append(
+            {
+                "epoch": epoch,
+                "train": train_metrics,
+                "val": val_metrics,
+                "monitor": {
+                    "metric": args.monitor_metric,
+                    "mode": args.monitor_mode,
+                    "value": monitor_value,
+                    "best_value": best_monitor_value,
+                    "best_epoch": best_epoch,
+                    "improved": improved,
+                    "patience_used": patience_used,
+                },
+            }
+        )
         print(json.dumps(history[-1], ensure_ascii=False), flush=True)
+        if args.early_stop_patience > 0 and patience_used >= args.early_stop_patience:
+            stopped_early = True
+            print(f"[{stage}] early_stop epoch={epoch} best_epoch={best_epoch}", flush=True)
+            break
 
     cosine_val = evaluate_cosine(val_rows, val_tensors)
-    mlp_val = history[-1]["val"] if history else evaluate_model(model, val_loader, train_device)
+    last_state = clone_state_dict(model)
+    model.load_state_dict(best_state)
+    mlp_val = best_val_metrics if best_val_metrics is not None else evaluate_model(model, val_loader, train_device)
+    cosine_test = evaluate_cosine(test_rows, test_tensors) if test_rows and test_tensors is not None else None
+    mlp_test = evaluate_model(model, test_loader, train_device) if test_loader is not None else None
     drop_improvement = mlp_val["drop_paired_acc"] - cosine_val["drop_paired_acc"]
     go_no_go = {
         "same_protocol_cosine_drop_paired_acc": cosine_val["drop_paired_acc"],
@@ -709,19 +808,23 @@ def main() -> None:
             "review_if_mlp_leq": 0.7244,
             "requires_review": bool(mlp_val["drop_paired_acc"] <= 0.7244),
         },
-        "note": "Final S2a go/no-go requires aggregating three seeds and checking 95% CI of improvement > 0.",
+        "note": "Final S2a/S2b reward-side go/no-go requires aggregating seeds and checking 95% CI of improvement > 0. This is not a held-out final evaluator claim.",
     }
 
     manifest = {
-        "task_id": "MDBG-S2A-REWARD-PROBE",
+        "task_id": f"MDBG-{args.run_stage.upper()}-REWARD-PROBE",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "role": "dev_metric",
         "repo_root": str(repo_root),
+        "run_stage": args.run_stage,
+        "ablation_name": args.ablation_name,
         "inputs": {
             "train_data": str(train_data_path),
             "val_data": str(val_data_path),
+            "test_data": str(test_data_path) if test_data_path else None,
             "train_events_json": str(resolve_path(repo_root, args.train_events_json)),
             "val_events_json": str(resolve_path(repo_root, args.val_events_json)),
+            "test_events_json": str(resolve_path(repo_root, args.test_events_json)) if test_data_path else None,
             "event_source": "data_*.npy text entry with longest decomposed list",
             "tmr_root": str(tmr_root),
             "tmr_run_dir": str(tmr_run_dir),
@@ -731,11 +834,13 @@ def main() -> None:
             "min_events": args.min_events,
             "max_train_samples": args.max_train_samples,
             "max_val_samples": args.max_val_samples,
+            "max_test_samples": args.max_test_samples,
             "length_window": args.length_window,
         },
         "row_counts": {
             "train": train_manifest_summary,
             "val": val_manifest_summary,
+            "test": test_manifest_summary,
             "unique_texts": len(texts),
             "embedding_dim": emb_dim,
         },
@@ -754,42 +859,79 @@ def main() -> None:
             "lambda_event_mask": args.lambda_event_mask,
             "rank_loss_corruption": "drop only",
             "replace_shuffle_usage": "eval only",
+            "early_stop_patience": args.early_stop_patience,
+            "monitor_metric": args.monitor_metric,
+            "monitor_mode": args.monitor_mode,
         },
     }
 
-    train_rows_path = output_dir / "s2a_rows_train.jsonl"
-    val_rows_path = output_dir / "s2a_rows_val.jsonl"
-    write_json(output_dir / "s2a_manifest.json", manifest)
+    file_prefix = args.run_stage
+    train_rows_path = output_dir / f"{file_prefix}_rows_train.jsonl"
+    val_rows_path = output_dir / f"{file_prefix}_rows_val.jsonl"
+    test_rows_path = output_dir / f"{file_prefix}_rows_test.jsonl" if test_rows else None
+    manifest_path = output_dir / f"{file_prefix}_manifest.json"
+    summary_path = output_dir / f"{file_prefix}_summary.json"
+    write_json(manifest_path, manifest)
     write_jsonl(train_rows_path, train_rows)
     write_jsonl(val_rows_path, val_rows)
+    if test_rows_path is not None:
+        write_jsonl(test_rows_path, test_rows)
     summary = {
-        "task_id": "MDBG-S2A-REWARD-PROBE-SUMMARY",
+        "task_id": f"MDBG-{args.run_stage.upper()}-REWARD-PROBE-SUMMARY",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "role": "dev_metric",
-        "manifest": str(output_dir / "s2a_manifest.json"),
+        "run_stage": args.run_stage,
+        "ablation_name": args.ablation_name,
+        "manifest": str(manifest_path),
         "rows": {
             "train": str(train_rows_path),
             "val": str(val_rows_path),
+            "test": str(test_rows_path) if test_rows_path else None,
         },
         "cosine_val": cosine_val,
+        "cosine_test": cosine_test,
         "mlp_val": mlp_val,
+        "mlp_test": mlp_test,
         "canonical_metrics": {
             "cosine": canonical_dev_metrics("tmr_cosine_dev", cosine_val),
             "reward": canonical_dev_metrics("reward_dev", mlp_val),
+            "cosine_test": canonical_dev_metrics("tmr_cosine_test", cosine_test, used_for="observation")
+            if cosine_test is not None
+            else None,
+            "reward_test": canonical_dev_metrics("reward_test", mlp_test, used_for="observation")
+            if mlp_test is not None
+            else None,
         },
         "history": history,
+        "best": {
+            "epoch": best_epoch,
+            "monitor_metric": args.monitor_metric,
+            "monitor_mode": args.monitor_mode,
+            "monitor_value": best_monitor_value,
+            "val": mlp_val,
+            "stopped_early": stopped_early,
+        },
         "go_no_go": go_no_go,
     }
-    write_json(output_dir / "s2a_summary.json", summary)
+    write_json(summary_path, summary)
     if not args.no_checkpoint:
         torch.save(
             {
-                "model_state_dict": model.cpu().state_dict(),
+                "model_state_dict": best_state,
                 "emb_dim": emb_dim,
                 "args": vars(args),
                 "summary": summary,
             },
-            output_dir / "s2a_checkpoint.pt",
+            output_dir / f"{file_prefix}_best_checkpoint.pt",
+        )
+        torch.save(
+            {
+                "model_state_dict": last_state,
+                "emb_dim": emb_dim,
+                "args": vars(args),
+                "summary": summary,
+            },
+            output_dir / f"{file_prefix}_last_checkpoint.pt",
         )
 
     print(json.dumps(summary["go_no_go"], ensure_ascii=False, indent=2))
