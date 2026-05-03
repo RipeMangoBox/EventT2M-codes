@@ -201,26 +201,45 @@ def choose_replacement(
     length_candidates: List[str] = []
     for length in range(max(0, target_len - length_window), target_len + length_window + 1):
         length_candidates.extend(event_pool_by_length.get(length, []))
-    candidates = [event for event in length_candidates if event not in source_set]
+    candidates = length_candidates
     stage = f"global_pool_not_in_source_len_window_{length_window}"
-    if not candidates:
-        candidates = [event for event in event_pool if event not in source_set]
+    replacement = choose_replacement_from_candidates(candidates, source_set, seed, sample_id, target_idx, target_event)
+    if replacement is None:
+        candidates = event_pool
         stage = "global_pool_not_in_source_fallback_any_length"
-    if not candidates:
+        replacement = choose_replacement_from_candidates(candidates, source_set, seed, sample_id, target_idx, target_event)
+    if replacement is None:
         raise ValueError(f"No replacement candidate for {sample_id}")
-    replacement = min(
-        candidates,
-        key=lambda event: stable_hash(
+    return replacement, stage, len(candidates)
+
+
+def choose_replacement_from_candidates(
+    candidates: Sequence[str],
+    source_set: set[str],
+    seed: int,
+    sample_id: str,
+    target_idx: int,
+    target_event: str,
+) -> str | None:
+    if not candidates:
+        return None
+    offset = int(
+        stable_hash(
             {
                 "seed": seed,
                 "sample_id": sample_id,
                 "target_idx": target_idx,
                 "target_event": target_event,
-                "candidate": event,
+                "pool_size": len(candidates),
             }
         ),
-    )
-    return replacement, stage, len(candidates)
+        16,
+    ) % len(candidates)
+    for step in range(len(candidates)):
+        candidate = candidates[(offset + step) % len(candidates)]
+        if candidate not in source_set:
+            return candidate
+    return None
 
 
 def read_data(path: Path) -> Dict[str, Dict[str, Any]]:
@@ -289,7 +308,7 @@ def select_rows(
                     "stage": replacement_stage,
                     "candidate_count": replacement_candidates,
                     "length_window": length_window,
-                    "selection": "min sha256(seed, sample_id, target_idx, target_event, candidate)",
+                    "selection": "sha256(seed, sample_id, target_idx, target_event, pool_size) offset, then first non-source event by circular scan",
                 },
                 "shuffle_policy": {
                     "name": "modebug_s2a_hash_shuffle_v1",
@@ -300,6 +319,8 @@ def select_rows(
         )
         if max_samples > 0 and len(rows) >= max_samples:
             break
+        if len(rows) == 1 or len(rows) % 1000 == 0:
+            print(f"[S2A] select_rows split={split} selected={len(rows)} scanned={sample_id}", flush=True)
     summary = {
         "split": split,
         "data_rows": len(data_dict),
