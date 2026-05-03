@@ -179,10 +179,18 @@ def build_event_pool(data_dict: Dict[str, Dict[str, Any]]) -> List[str]:
     return sorted(pool, key=lambda event: (event.lower(), event))
 
 
+def build_event_pool_by_length(event_pool: Sequence[str]) -> Dict[int, List[str]]:
+    by_length: Dict[int, List[str]] = {}
+    for event in event_pool:
+        by_length.setdefault(len(event.split()), []).append(event)
+    return by_length
+
+
 def choose_replacement(
     events: Sequence[str],
     target_idx: int,
     event_pool: Sequence[str],
+    event_pool_by_length: Dict[int, List[str]],
     seed: int,
     sample_id: str,
     length_window: int,
@@ -190,11 +198,10 @@ def choose_replacement(
     target_event = events[target_idx]
     source_set = set(events)
     target_len = len(target_event.split())
-    candidates = [
-        event
-        for event in event_pool
-        if event not in source_set and abs(len(event.split()) - target_len) <= length_window
-    ]
+    length_candidates: List[str] = []
+    for length in range(max(0, target_len - length_window), target_len + length_window + 1):
+        length_candidates.extend(event_pool_by_length.get(length, []))
+    candidates = [event for event in length_candidates if event not in source_set]
     stage = f"global_pool_not_in_source_len_window_{length_window}"
     if not candidates:
         candidates = [event for event in event_pool if event not in source_set]
@@ -230,6 +237,7 @@ def select_rows(
     length_window: int,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     event_pool = build_event_pool(data_dict)
+    event_pool_by_length = build_event_pool_by_length(event_pool)
     rows: List[Dict[str, Any]] = []
     skipped = {"too_few_events": 0, "no_replacement": 0}
     for sample_id in sorted(data_dict):
@@ -245,7 +253,7 @@ def select_rows(
         replace_events = list(events)
         try:
             replacement_event, replacement_stage, replacement_candidates = choose_replacement(
-                events, target_idx, event_pool, seed, sample_id, length_window
+                events, target_idx, event_pool, event_pool_by_length, seed, sample_id, length_window
             )
         except ValueError:
             skipped["no_replacement"] += 1
