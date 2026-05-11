@@ -17,7 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import rootutils
-from matplotlib.animation import FuncAnimation
+from matplotlib.animation import FFMpegWriter, FuncAnimation
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
@@ -181,7 +181,16 @@ def plot_xz_plane(ax, minx: float, maxx: float, miny: float, minz: float, maxz: 
     ax.add_collection3d(xz_plane)
 
 
-def render_humanml3d_style(save_path: Path, joints: np.ndarray, title: str, fps: float = 20.0, radius: float = 4.0) -> None:
+def render_humanml3d_style(
+    save_path: Path,
+    joints: np.ndarray,
+    title: str,
+    fps: float = 20.0,
+    radius: float = 4.0,
+    ffmpeg_path: str | None = None,
+) -> None:
+    if ffmpeg_path:
+        plt.rcParams["animation.ffmpeg_path"] = ffmpeg_path
     data = joints.copy().reshape(len(joints), -1, 3)
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111, projection="3d")
@@ -243,7 +252,8 @@ def render_humanml3d_style(save_path: Path, joints: np.ndarray, title: str, fps:
             ax.plot3D(data[index, chain, 0], data[index, chain, 1], data[index, chain, 2], linewidth=linewidth, color=color)
 
     ani = FuncAnimation(fig, update, frames=data.shape[0], interval=1000 / fps, repeat=False)
-    ani.save(str(save_path), fps=fps)
+    writer = FFMpegWriter(fps=fps) if save_path.suffix.lower() == ".mp4" else None
+    ani.save(str(save_path), writer=writer, fps=None if writer else fps)
     plt.close(fig)
 
 
@@ -318,6 +328,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=20260511)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--render-videos", action="store_true")
+    parser.add_argument("--ffmpeg-path", default="")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--extra-override", action="append", default=[])
     parser.add_argument("--expected-bases", type=int, default=0)
@@ -423,7 +434,7 @@ def main() -> None:
             save_static_plot(joints, static_plot, prompt_id)
             if args.render_videos and (args.overwrite or not video_path.exists()):
                 video_path.parent.mkdir(parents=True, exist_ok=True)
-                render_humanml3d_style(video_path, joints, title=prompt_id, fps=20.0)
+                render_humanml3d_style(video_path, joints, title=prompt_id, fps=20.0, ffmpeg_path=args.ffmpeg_path or None)
 
             out_row.update(
                 {
