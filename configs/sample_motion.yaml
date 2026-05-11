@@ -44,5 +44,10 @@ repeats: 10
 
 device: "0"
 
+model:
+  noise_scheduler:
+    # The released HumanML3D checkpoint predicts x0. Using epsilon here inflates
+    # generated motions by two orders of magnitude during sampling.
+    prediction_type: sample
 
 

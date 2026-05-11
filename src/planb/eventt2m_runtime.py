@@ -4,7 +4,7 @@ import random
 from dataclasses import dataclass
 import importlib.util
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Sequence
 
 import hydra
 import numpy as np
@@ -36,6 +36,7 @@ def load_eventt2m_runtime(
     device: str = "cpu",
     step_num: int | None = None,
     data_dir: str | Path | None = None,
+    extra_overrides: Sequence[str] | None = None,
 ) -> EventT2MRuntime:
     repo_root = _repo_root()
     config_dir = repo_root / "configs"
@@ -47,6 +48,8 @@ def load_eventt2m_runtime(
             overrides.append(f"model.step_num={step_num}")
         if data_dir is not None:
             overrides.append(f"data_dir={Path(data_dir).resolve()}")
+        if extra_overrides:
+            overrides.extend(extra_overrides)
         cfg = compose(config_name="sample_motion.yaml", overrides=overrides, return_hydra_config=True)
         HydraConfig.instance().set_config(cfg)
 
