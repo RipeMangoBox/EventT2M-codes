@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
@@ -31,6 +32,10 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _hydra_value(value: str | Path) -> str:
+    return json.dumps(str(Path(value).resolve()))
+
+
 def load_eventt2m_runtime(
     ckpt_path: str | Path | None = None,
     device: str = "cpu",
@@ -43,11 +48,11 @@ def load_eventt2m_runtime(
     with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
         overrides = []
         if ckpt_path is not None:
-            overrides.append(f"ckpt_path={Path(ckpt_path).resolve()}")
+            overrides.append(f"ckpt_path={_hydra_value(ckpt_path)}")
         if step_num is not None:
             overrides.append(f"model.step_num={step_num}")
         if data_dir is not None:
-            overrides.append(f"data_dir={Path(data_dir).resolve()}")
+            overrides.append(f"data_dir={_hydra_value(data_dir)}")
         if extra_overrides:
             overrides.extend(extra_overrides)
         cfg = compose(config_name="sample_motion.yaml", overrides=overrides, return_hydra_config=True)
