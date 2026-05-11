@@ -1,7 +1,6 @@
 # @package _global_
 
 defaults:
-  - _self_
   - data: hml3d_event_final # choose datamodule with `test_dataloader()` for evaluation
   - model: event_final
   - logger: null
@@ -9,6 +8,7 @@ defaults:
   - paths: default
   - extras: default
   - hydra: default
+  - _self_
 
 task_name: "visual"
 
@@ -49,5 +49,4 @@ model:
     # The released HumanML3D checkpoint predicts x0. Using epsilon here inflates
     # generated motions by two orders of magnitude during sampling.
     prediction_type: sample
-
 
