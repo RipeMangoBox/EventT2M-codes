@@ -31,6 +31,7 @@ DEFAULT_OVERRIDES = [
     "model.noise_scheduler.prediction_type=sample",
     "model.denoiser.stage_dim=256*4",
 ]
+DEFAULT_CONDITIONS = ["full", "drop", "replace", "shuffle", "repeat"]
 CSV_FIELDS = [
     "index",
     "model",
@@ -57,6 +58,15 @@ CSV_FIELDS = [
 
 
 def read_manifest(path: Path) -> list[dict[str, str]]:
+    if path.suffix == ".jsonl":
+        rows: list[dict[str, str]] = []
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                rows.append({key: json.dumps(value) if isinstance(value, (list, dict)) else str(value) for key, value in item.items()})
+        return rows
     with path.open(newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f, delimiter="\t"))
 
@@ -78,6 +88,41 @@ def split_prompt_events(prompt: str, max_events: int = 11) -> list[str]:
     if len(events) <= max_events:
         return events
     return [*events[: max_events - 1], " ".join(events[max_events - 1 :])]
+
+
+def events_from_row(row: dict[str, str]) -> list[str]:
+    for key in ("condition_events", "variant_events", "events"):
+        value = row.get(key, "").strip()
+        if not value:
+            continue
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = [part.strip() for part in re.split(r"\s*(?:\|\||;)\s*", value) if part.strip()]
+        if isinstance(parsed, list):
+            events = [str(part).strip() for part in parsed if str(part).strip()]
+            if events:
+                return [event if event.endswith(".") else f"{event}." for event in events]
+    return split_prompt_events(row["prompt"])
+
+
+def validate_manifest_grid(rows: list[dict[str, str]], expected_bases: int, expected_conditions: list[str]) -> None:
+    required = {"prompt_id", "base_id", "category", "condition", "trace_tier", "prompt", "length"}
+    missing = sorted(required - set(rows[0].keys())) if rows else sorted(required)
+    if missing:
+        raise ValueError(f"manifest missing required columns: {missing}")
+    if expected_bases <= 0:
+        return
+    by_base: dict[str, list[str]] = {}
+    for row in rows:
+        by_base.setdefault(row["base_id"], []).append(row["condition"])
+    if len(by_base) != expected_bases:
+        raise ValueError(f"expected {expected_bases} base cases, found {len(by_base)}")
+    expected = sorted(expected_conditions)
+    bad = {base_id: sorted(conditions) for base_id, conditions in by_base.items() if sorted(conditions) != expected}
+    if bad:
+        preview = dict(list(bad.items())[:5])
+        raise ValueError(f"condition grid mismatch; expected {expected}; examples: {preview}")
 
 
 def geometry_summary(joints: np.ndarray) -> dict[str, Any]:
@@ -217,7 +262,7 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def write_summary_md(path: Path, rows: list[dict[str, Any]], output_root: Path) -> None:
+def write_summary_md(path: Path, rows: list[dict[str, Any]], output_root: Path, protocol: str, limitations: str) -> None:
     generated = sum(1 for row in rows if row["status"] == "ok")
     raw = sum(1 for row in rows if row["trace_tier"] == "raw")
     lines = [
@@ -232,7 +277,8 @@ def write_summary_md(path: Path, rows: list[dict[str, Any]], output_root: Path) 
         "- role: `diagnostic`",
         "- used_for: `observation`",
         "- evaluator: `modebug_m0_v2_geometry_trace_audit`",
-        "- limitations: synthetic M0 v2 battery only; not a final HumanML3D metric evaluator",
+        f"- protocol: `{protocol}`",
+        f"- limitations: {limitations}",
         "",
         "| prompt_id | category | condition | status | length | finite_rate | mean_joint_step | root_x_span | root_z_span | static_plot |",
         "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
@@ -262,7 +308,7 @@ def sha256_file(path: Path) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run EventT2M on the MoDebug archived legacy M0 v2 battery.")
+    parser = argparse.ArgumentParser(description="Run EventT2M on a MoDebug M0 v2 manifest.")
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--result-dir", type=Path, required=True)
     parser.add_argument("--ckpt-path", type=Path, default=Path("checkpoints/pretrained/HumanML3D/hml3d.ckpt"))
@@ -274,6 +320,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--render-videos", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--extra-override", action="append", default=[])
+    parser.add_argument("--expected-bases", type=int, default=0)
+    parser.add_argument("--expected-conditions", default=",".join(DEFAULT_CONDITIONS))
+    parser.add_argument("--protocol", default="M0_v2_20260508 synthetic event-temporal battery")
+    parser.add_argument("--motion-source", default="EventT2M checkpoint with fixed x0 sampling config")
+    parser.add_argument("--coverage", default="")
+    parser.add_argument("--condition-pair", default="full/drop, full/replace, full/shuffle, full/repeat")
+    parser.add_argument(
+        "--limitations",
+        default="Synthetic M0_v2 battery has no paired GT motion distribution; do not use for FID/R-Precision final evaluation.",
+    )
     return parser.parse_args()
 
 
@@ -292,6 +348,9 @@ def main() -> None:
     rows = read_manifest(manifest)
     if args.limit > 0:
         rows = rows[: args.limit]
+    expected_conditions = [item.strip() for item in args.expected_conditions.split(",") if item.strip()]
+    if rows:
+        validate_manifest_grid(rows, args.expected_bases, expected_conditions)
 
     overrides = [*DEFAULT_OVERRIDES, *args.extra_override]
     runtime = load_eventt2m_runtime(
@@ -350,7 +409,7 @@ def main() -> None:
         }
         try:
             if not joints_path.exists() or args.overwrite:
-                events = split_prompt_events(row["prompt"])
+                events = events_from_row(row)
                 raw = generate_raw_motion(runtime, row["prompt"], events, length, seed=args.seed + index)
                 joints = recover_joints(raw)
                 raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -395,7 +454,9 @@ def main() -> None:
     result_dir.mkdir(parents=True, exist_ok=True)
     write_csv(result_dir / "geometry_audit.csv", audit_rows)
     write_jsonl(result_dir / "trace_summary.jsonl", trace_rows)
-    write_summary_md(result_dir / "geometry_trace_audit_summary.md", audit_rows, native_dir)
+    write_summary_md(result_dir / "geometry_trace_audit_summary.md", audit_rows, native_dir, args.protocol, args.limitations)
+    generated_ok = sum(1 for row in audit_rows if row["status"] == "ok")
+    coverage = args.coverage or f"{len({row['base_id'] for row in rows})} base cases x {len(expected_conditions)} conditions"
     run_manifest = {
         "date": datetime.now().isoformat(timespec="seconds"),
         "model": MODEL_NAME,
@@ -403,7 +464,7 @@ def main() -> None:
         "output_root": str(native_dir),
         "result_dir": str(result_dir),
         "prompts": len(rows),
-        "generated_ok": sum(1 for row in audit_rows if row["status"] == "ok"),
+        "generated_ok": generated_ok,
         "missing_or_error": sum(1 for row in audit_rows if row["status"] != "ok"),
         "eventt2m_git_head": git_head(repo_root),
         "eventt2m_ckpt": str((repo_root / args.ckpt_path).resolve() if not args.ckpt_path.is_absolute() else args.ckpt_path),
@@ -414,14 +475,14 @@ def main() -> None:
         "seed": args.seed,
         "sampling_overrides": overrides,
         "evaluator": "modebug_m0_v2_geometry_trace_audit",
-        "protocol": "archived_legacy_m0_v2_20260510 synthetic event-temporal battery",
-        "motion_source": "EventT2M released HumanML3D checkpoint with fixed x0 sampling config",
-        "condition_pair": "full/drop, full/replace, full/shuffle, full/repeat",
-        "n/evaluable": f"{sum(1 for row in audit_rows if row['status'] == 'ok')}/{len(audit_rows)}",
-        "coverage": "18 base cases x 5 conditions from archived legacy M0 v2 manifest",
+        "protocol": args.protocol,
+        "motion_source": args.motion_source,
+        "condition_pair": args.condition_pair,
+        "n/evaluable": f"{generated_ok}/{len(audit_rows)}",
+        "coverage": coverage,
         "role": "diagnostic",
         "used_for": "observation",
-        "limitations": "Synthetic battery has no paired GT motion distribution; do not use for FID/R-Precision final evaluation.",
+        "limitations": args.limitations,
     }
     (result_dir / "run_manifest.json").write_text(json.dumps(run_manifest, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: run_manifest[k] for k in ["result_dir", "prompts", "generated_ok", "missing_or_error"]}, indent=2))
